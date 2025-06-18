@@ -1,0 +1,118 @@
+---
+title: "LA Civil Conditions Dashboard"
+format: html
+execute:
+  echo: false
+  warning: false
+  message: false
+freeze: auto
+page-layout: full
+editor: visual
+---
+
+```{r setup}
+library(leaflet)
+library(sf)
+library(dplyr)
+library(readr)
+library(reactable)
+library(htmltools)
+
+# Load and clean data
+status_data <- read_csv("C:/Los Angeles/LA_1984_Civil_Status_novenice.csv")
+neighborhoods <- st_read("C:/Los Angeles/LA_Times_Neighborhood_Boundaries.geojson", quiet = TRUE)
+
+# Prep neighborhood geometry
+neighborhoods <- st_transform(neighborhoods, crs = 4326)
+
+# Summarize status data
+summary_tbl <- status_data %>%
+  group_by(neighborhood) %>%
+  summarize(
+    peaceful = sum(status == "Peaceful"),
+    violent = sum(status == "Violent"),
+    total = n(),
+    .groups = "drop"
+  )
+
+# Join to spatial
+neighborhoods <- left_join(neighborhoods, summary_tbl, by = c("name" = "neighborhood"))
+
+# Create labels
+neighborhoods$label <- ifelse(
+  is.na(neighborhoods$total),
+  paste0("<strong>", neighborhoods$name, "</strong><br/>No data reported."),
+  paste0(
+    "<strong>", neighborhoods$name, "</strong><br/>",
+    round(100 * neighborhoods$peaceful / neighborhoods$total, 1), "% Peaceful<br/>",
+    round(100 * neighborhoods$violent / neighborhoods$total, 1), "% Violent"
+  )
+)
+
+# Color palette for violence
+pal <- colorNumeric(
+  palette = colorRampPalette(c("#FFE5B4", "#FF8C00", "#7F3F00"))(100),
+  domain = neighborhoods$violent,
+  na.color = "#cccccc"
+)
+``` 
+
+### Interactive Map
+
+```{r map, echo = FALSE, message = FALSE, warning = FALSE, fig.height=8, out.width = '100%'}
+leaflet(neighborhoods) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    color = "white",
+    weight = 1,
+    fillColor = ~ifelse(
+      is.na(violent), "#cccccc",
+      ifelse(violent == 0, "steelblue", pal(violent))
+    ),
+    fillOpacity = 0.7,
+    label = ~lapply(label, HTML),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#666",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = neighborhoods$violent,
+    title = "% Violent Reports",
+    labFormat = labelFormat(suffix = "%"),
+    opacity = 0.7
+  ) %>%
+  addLegend(
+    position = "bottomleft",
+    colors = c("steelblue", "#cccccc"),
+    labels = c("0% Violence", "No Data"),
+    title = "Legend",
+    opacity = 0.7
+  )
+```
+
+### Browse Individual Reports
+
+```{r}
+reactable(
+  status_data %>% select(neighborhood, date, time_block, status, perpetrator, media_link),
+  searchable = TRUE,
+  filterable = TRUE,
+  defaultPageSize = 10,
+  columns = list(
+    neighborhood = colDef(name = "Neighborhood", filterable = TRUE),
+    date = colDef(name = "Date"),
+    time_block = colDef(name = "Time"),
+    status = colDef(name = "Status"),
+    perpetrator = colDef(name = "Perpetrator"),
+    media_link = colDef(name = "Media", html = TRUE, cell = function(value) {
+      if (is.na(value) || value == "") return("None")
+      sprintf("<a href='%s' target='_blank'>View</a>", value)
+    })
+  )
+)
+```
